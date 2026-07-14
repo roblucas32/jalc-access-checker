@@ -107,10 +107,17 @@ function extractJsonValue(text, key) {
 
 async function getCaptionTracks(videoId) {
   const resp = await fetch(WATCH_URL(videoId), { headers: FETCH_HEADERS });
+  console.log(`[get-transcript] watch page fetch: status=${resp.status} videoId=${videoId}`);
   if (!resp.ok) {
     throw new HandledError(502, `YouTube returned an error loading the video page (HTTP ${resp.status}).`);
   }
   const html = await resp.text();
+  console.log(`[get-transcript] watch page length: ${html.length} chars`);
+  console.log(`[get-transcript] contains "captionTracks": ${html.includes('captionTracks')}`);
+  console.log(`[get-transcript] contains "consent": ${html.toLowerCase().includes('consent')}`);
+  console.log(`[get-transcript] contains "unusual traffic" or "captcha": ${/unusual traffic|captcha|recaptcha/i.test(html)}`);
+  console.log(`[get-transcript] page title tag: ${(html.match(/<title>([^<]*)<\/title>/) || [])[1] || 'NOT FOUND'}`);
+  console.log(`[get-transcript] first 300 chars: ${html.slice(0, 300).replace(/\s+/g, ' ')}`);
 
   const tracksJson = extractJsonValue(html, 'captionTracks');
   if (!tracksJson) {
