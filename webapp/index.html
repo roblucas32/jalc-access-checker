@@ -288,6 +288,22 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  .issue-fix {
+    font-size: 13px;
+    color: var(--pass);
+    background: var(--pass-bg);
+    border-left: 3px solid var(--pass);
+    padding: 6px 10px;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    margin-top: 8px;
+    line-height: 1.5;
+  }
+  .issue-fix strong {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
   .no-issues { padding: 18px 16px; color: var(--pass); font-weight: 500; }
 
   .legend {
@@ -566,6 +582,12 @@ function stripVttTags(text) {
   return text.replace(/<[^>]+>/g, '');
 }
 
+function friendlyTimestamp(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
 function checkCaptions(text, opts = {}) {
   const maxChars = opts.maxChars ?? 45;
   const maxWps = opts.maxWps ?? 3.5;
@@ -577,7 +599,8 @@ function checkCaptions(text, opts = {}) {
   if (cues.length === 0) {
     issues.push({
       rule: 'no_cues_found', severity: 'error',
-      message: 'No valid caption cues were parsed. Check timestamp formatting.',
+      message: "This doesn't look like a usable caption file — no properly timed captions could be found in it.",
+      fix: "Make sure the file starts with 'WEBVTT' (for .vtt files) and that each caption has a timing line like '00:00:01.000 --> 00:00:04.000'. If it came from an export, try re-exporting it.",
     });
     return issues;
   }
@@ -590,7 +613,8 @@ function checkCaptions(text, opts = {}) {
     if (!visibleText) {
       issues.push({
         cueIndex: cue.index, rule: 'empty_cue', severity: 'error',
-        message: 'Caption block has a timestamp but no text.',
+        message: `There's a caption timed at ${friendlyTimestamp(cue.start)} with no text in it — viewers would see a blank caption appear.`,
+        fix: "Open your caption editor, find this timestamp, and either type in the missing words or delete the empty caption if it isn't needed.",
       });
       continue;
     }
@@ -600,28 +624,34 @@ function checkCaptions(text, opts = {}) {
       if (visibleLine.length > maxChars) {
         issues.push({
           cueIndex: cue.index, rule: 'line_length', severity: 'warning',
-          message: `Line ${li + 1} is ${visibleLine.length} chars (max ${maxChars}): "${visibleLine.slice(0, 60)}${visibleLine.length > 60 ? '...' : ''}"`,
+          message: `This caption line is a bit long to read comfortably in the time it's on screen (${visibleLine.length} characters — aim for under ${maxChars}): "${visibleLine.slice(0, 60)}${visibleLine.length > 60 ? '...' : ''}"`,
+          fix: 'Shorten the wording, or break it into a second line (or a second caption) at a natural pause in the sentence.',
         });
       }
     });
 
     const duration = cue.end - cue.start;
+    const textPreview = visibleText.slice(0, 50) + (visibleText.length > 50 ? '...' : '');
+    const friendlyTs = friendlyTimestamp(cue.start);
     if (duration <= 0) {
       issues.push({
         cueIndex: cue.index, rule: 'bad_duration', severity: 'error',
-        message: `Non-positive duration (${duration.toFixed(2)}s).`,
+        message: `A caption around ${friendlyTs} appears on screen for zero seconds, so viewers would never actually get to read it: "${textPreview}"`,
+        fix: "Open your caption editor at this timestamp and move the end time so it comes after the start time — even half a second is enough to fix it.",
       });
     } else if (duration < minDuration) {
       issues.push({
         cueIndex: cue.index, rule: 'too_short', severity: 'warning',
-        message: `Cue duration ${duration.toFixed(2)}s is very short (<${minDuration}s).`,
+        message: `A caption around ${friendlyTs} flashes by very quickly (on screen for less than half a second): "${textPreview}"`,
+        fix: "Extend how long this caption stays on screen, or combine it with the caption next to it if it's just a short fragment.",
       });
     }
 
     if (prevEnd !== null && cue.start < prevEnd - 0.001) {
       issues.push({
         cueIndex: cue.index, rule: 'overlap', severity: 'error',
-        message: `Overlaps previous cue #${prevIdx} by ${(prevEnd - cue.start).toFixed(2)}s.`,
+        message: "This caption's timing overlaps with the one right before it, which can cause caption players to skip or garble one of them.",
+        fix: "In your caption editor, move this caption's start time so it doesn't begin until the previous caption has finished.",
       });
     }
 
@@ -631,7 +661,8 @@ function checkCaptions(text, opts = {}) {
       if (wps > maxWps) {
         issues.push({
           cueIndex: cue.index, rule: 'reading_speed', severity: 'warning',
-          message: `${wps.toFixed(1)} words/sec exceeds max ${maxWps} (${wordCount} words in ${duration.toFixed(2)}s).`,
+          message: `This caption has more words than most viewers can comfortably read in the time it's on screen (${wordCount} words in ${duration.toFixed(1)} seconds).`,
+          fix: 'Shorten the wording, give the caption more time on screen, or split it into two captions.',
         });
       }
     }
@@ -702,13 +733,15 @@ function checkHtml(htmlText, DOMParserImpl) {
   const htmlTag = doc.querySelector('html');
   if (!htmlTag || !htmlTag.getAttribute('lang')) {
     issues.push({ rule: 'missing_lang', wcag: '3.1.1', severity: 'error',
-      message: 'The <html> element is missing a lang attribute.' });
+      message: "This page doesn't say what language it's written in, which stops screen readers from pronouncing the words correctly.",
+      fix: 'Add lang="en" (or the correct language code) to the opening <html> tag in the page\'s code.' });
   }
 
   const title = doc.querySelector('title');
   if (!title || !title.textContent.trim()) {
     issues.push({ rule: 'missing_title', wcag: '2.4.2', severity: 'error',
-      message: 'Page is missing a non-empty <title> element.' });
+      message: "This page has no title, so it won't show up properly in browser tabs, bookmarks, or for screen reader users.",
+      fix: "Add a descriptive <title> in the page's <head> that names what the page is about." });
   }
 
   doc.querySelectorAll('img').forEach(img => {
@@ -716,13 +749,16 @@ function checkHtml(htmlText, DOMParserImpl) {
     const src = img.getAttribute('src') || 'unknown-src';
     if (alt === null) {
       issues.push({ rule: 'missing_alt', wcag: '1.1.1', severity: 'error',
-        message: 'Image missing alt attribute entirely.', snippet: src });
+        message: 'This image has no description, so people using a screen reader have no idea what it shows.', snippet: src,
+        fix: 'Add alt="..." describing what the image shows or what it\'s for. Use alt="" only if the image is purely decorative.' });
     } else if (PLACEHOLDER_ALT_RES.some(re => re.test(alt.trim()))) {
       issues.push({ rule: 'placeholder_alt', wcag: '1.1.1', severity: 'warning',
-        message: `Alt text looks like a placeholder/filename: "${alt}"`, snippet: src });
+        message: `This image's description is just a filename, not an actual description: "${alt}"`, snippet: src,
+        fix: "Replace it with a real description of what the image shows and why it's there." });
     } else {
       issues.push({ rule: 'alt_needs_review', wcag: '1.1.1', severity: 'review',
-        message: `Alt text present — verify it meaningfully describes the image: "${alt}"`, snippet: src });
+        message: `This image has a description — just double-check it explains what's shown: "${alt}"`, snippet: src,
+        fix: 'Read the description and confirm it explains what the image shows or does, not just that something is there.' });
     }
   });
 
@@ -730,10 +766,13 @@ function checkHtml(htmlText, DOMParserImpl) {
   const levels = headings.map(h => +h.tagName[1]);
   const h1Count = levels.filter(l => l === 1).length;
   if (h1Count === 0 && headings.length) {
-    issues.push({ rule: 'no_h1', wcag: '1.3.1', severity: 'warning', message: 'No <h1> found on the page.' });
+    issues.push({ rule: 'no_h1', wcag: '1.3.1', severity: 'warning',
+      message: "This page has no main heading, which makes it harder for screen reader users to understand what the page is about or jump straight to it.",
+      fix: "Add one <h1> heading that names the page's main topic." });
   } else if (h1Count > 1) {
     issues.push({ rule: 'multiple_h1', wcag: '1.3.1', severity: 'warning',
-      message: `Found ${h1Count} <h1> elements; typically should be one per page.` });
+      message: `This page has ${h1Count} main headings — normally there should be just one, so screen reader users aren't confused about which one is the actual title.`,
+      fix: 'Keep a single <h1> for the page\'s main title; change the others to <h2> or lower based on where they sit in the outline.' });
   }
 
   let prevLevel = null;
@@ -741,7 +780,8 @@ function checkHtml(htmlText, DOMParserImpl) {
     const level = +h.tagName[1];
     if (prevLevel !== null && level > prevLevel + 1) {
       issues.push({ rule: 'heading_skip', wcag: '1.3.1', severity: 'warning',
-        message: `Heading level jumps from h${prevLevel} to h${level} ('${h.textContent.trim().slice(0, 50)}').` });
+        message: `The headings skip a level here, jumping from h${prevLevel} straight to h${level} ('${h.textContent.trim().slice(0, 50)}') — screen reader users navigate by heading level, and a skipped level breaks that outline.`,
+        fix: `Change this to h${prevLevel + 1}, or add the missing heading level(s) in between so the outline steps down one level at a time.` });
     }
     prevLevel = level;
   });
@@ -762,8 +802,9 @@ function checkHtml(htmlText, DOMParserImpl) {
       if (ratio < threshold) {
         issues.push({
           rule: 'low_contrast', wcag: '1.4.3 / 1.4.11', severity: 'error',
-          message: `Contrast ratio ${ratio.toFixed(2)}:1 for ${fgHex} on ${bgHex} is below the ${threshold}:1 threshold for ${isLarge ? 'large' : 'normal'} text.`,
+          message: `This text doesn't stand out enough against its background for people with low vision to read comfortably (${fgHex} text on ${bgHex} background).`,
           snippet: el.outerHTML.slice(0, 120),
+          fix: `Darken the text color, lighten the background (or vice versa) until they contrast enough (a ratio of at least ${threshold}:1). WebAIM's Contrast Checker (a free website) will tell you the exact ratio as you adjust colors.`,
         });
       }
     }
@@ -781,8 +822,9 @@ function checkHtml(htmlText, DOMParserImpl) {
     const wrapped = !!inp.closest('label');
     if (!hasLabel && !hasAria && !wrapped) {
       issues.push({ rule: 'missing_form_label', wcag: '1.3.1 / 4.1.2', severity: 'error',
-        message: `<${inp.tagName.toLowerCase()}> element has no associated <label>, aria-label, or aria-labelledby.`,
-        snippet: inp.outerHTML.slice(0, 120) });
+        message: `This form field has no label telling users what to type into it.`,
+        snippet: inp.outerHTML.slice(0, 120),
+        fix: `Add a <label for="${id || 'matching-id'}">Field name</label> pointing at this field, or add an aria-label attribute directly on it.` });
     }
   });
 
@@ -792,12 +834,14 @@ function checkHtml(htmlText, DOMParserImpl) {
     const hasImgAlt = Array.from(a.querySelectorAll('img')).some(img => (img.getAttribute('alt') || '').trim());
     if (!text && !hasAria && !hasImgAlt) {
       issues.push({ rule: 'empty_link', wcag: '2.4.4 / 4.1.2', severity: 'error',
-        message: 'Link has no accessible name (no text, aria-label, or alt on inner image).',
-        snippet: a.outerHTML.slice(0, 120) });
+        message: 'This link has no text at all, so screen reader users have no way to know where it goes.',
+        snippet: a.outerHTML.slice(0, 120),
+        fix: 'Add visible link text describing the destination, or an aria-label attribute if the link is icon-only.' });
     } else if (GENERIC_LINK_PHRASES.has(text.toLowerCase().replace(/[.\s]+$/, ''))) {
       issues.push({ rule: 'generic_link_text', wcag: '2.4.4', severity: 'warning',
-        message: `Link text is non-descriptive out of context: "${text}"`,
-        snippet: a.outerHTML.slice(0, 120) });
+        message: `This link just says "${text}", which doesn't tell someone where it goes if they're jumping between links (a common way screen reader users navigate).`,
+        snippet: a.outerHTML.slice(0, 120),
+        fix: 'Rewrite the link text to describe its destination, e.g. "Download the Fall syllabus" instead of "click here".' });
     }
   });
 
@@ -806,7 +850,8 @@ function checkHtml(htmlText, DOMParserImpl) {
     const hasAria = btn.getAttribute('aria-label') || btn.getAttribute('aria-labelledby');
     if (!text && !hasAria) {
       issues.push({ rule: 'empty_button', wcag: '4.1.2', severity: 'error',
-        message: 'Button has no accessible name.', snippet: btn.outerHTML.slice(0, 120) });
+        message: "This button has no label, so screen reader users won't know what it does.", snippet: btn.outerHTML.slice(0, 120),
+        fix: 'Add visible button text, or an aria-label attribute describing what the button does.' });
     }
   });
 
@@ -818,14 +863,17 @@ function checkHtml(htmlText, DOMParserImpl) {
     const snippet = table.outerHTML.slice(0, 100);
     if (!hasTh) {
       issues.push({ rule: 'table_missing_headers', wcag: '1.3.1', severity: 'error',
-        message: 'Table has no <th> header cells.', snippet });
+        message: "This table has no header cells, so screen readers can't tell users what each column or row means as they move through it.", snippet,
+        fix: 'Change the header row/column cells from <td> to <th>.' });
     } else if (!hasScope) {
       issues.push({ rule: 'table_missing_scope', wcag: '1.3.1', severity: 'warning',
-        message: 'Table headers present but none have a scope attribute.', snippet });
+        message: "This table has header cells, but they're not marked as heading a column or a row, which screen readers rely on for clarity.", snippet,
+        fix: 'Add scope="col" or scope="row" to each <th>, depending on whether it heads a column or a row.' });
     }
     if (!hasCaption) {
       issues.push({ rule: 'table_missing_caption', wcag: '1.3.1', severity: 'warning',
-        message: 'Table has no <caption> element.', snippet });
+        message: 'This table has no caption explaining what it shows.', snippet,
+        fix: "Add a <caption> as the table's first child describing what the table shows." });
     }
   });
 
@@ -918,11 +966,13 @@ async function checkDocx(arrayBuffer, JSZipLib, DOMParserImpl) {
   }
   if (!lang || !lang.trim()) {
     issues.push({ rule: 'missing_language', wcag: '3.1.1', level: 'A', severity: 'error',
-      message: "No default document language is set. In Word 365: Ctrl+A to select all, then Review > Language > Set Proofing Language, choose the correct language, and click 'Set As Default' (not just OK) so it applies to the document template, not just the current selection." });
+      message: "This document doesn't have a language set, which can cause screen readers to mispronounce words or read in the wrong accent/language entirely.",
+      fix: "In Word 365: Ctrl+A to select all, then Review > Language > Set Proofing Language, choose the correct language, and click 'Set As Default' (not just OK) so it applies to the document template, not just the current selection." });
   }
   if (!title || !title.trim()) {
     issues.push({ rule: 'missing_title', wcag: '2.4.2', level: 'A', severity: 'error',
-      message: "Document Title property is not set (File > Info > Properties > Title — different from the filename and different from an in-document heading)." });
+      message: "This document has no Title set in its properties, so it won't show a meaningful name in screen readers or document management tools — the filename alone isn't the same thing.",
+      fix: "File > Info > Properties > Title — this is different from the filename and different from an in-document heading." });
   }
 
   const body = firstTag(doc, 'w:body');
@@ -952,11 +1002,13 @@ async function checkDocx(arrayBuffer, JSZipLib, DOMParserImpl) {
       const level = +m[1];
       if (!text) {
         issues.push({ rule: 'empty_heading', wcag: '2.4.6', level: 'AA', severity: 'error',
-          message: `Heading style 'Heading ${level}' applied to an empty paragraph.` });
+          message: `There's a heading with no text in it — screen reader users navigating by heading would land on an empty item.`,
+          fix: "Add text to this heading, or remove the Heading style if the paragraph isn't actually a section heading." });
       }
       if (prevLevel !== null && level > prevLevel + 1) {
         issues.push({ rule: 'heading_skip', wcag: '2.4.6 / 1.3.1', level: 'AA', severity: 'warning',
-          message: `Heading level jumps from H${prevLevel} to H${level}: "${text.slice(0, 50)}"` });
+          message: `The headings skip a level here, jumping from Heading ${prevLevel} straight to Heading ${level}: "${text.slice(0, 50)}" — this breaks the outline screen reader users rely on to navigate.`,
+          fix: `Change this to Heading ${prevLevel + 1}, or add the missing heading level(s) in between so the outline steps down one level at a time.` });
       }
       prevLevel = level;
     } else if (text) {
@@ -976,14 +1028,16 @@ async function checkDocx(arrayBuffer, JSZipLib, DOMParserImpl) {
         });
         if (allBold && shortLine && looksBig) {
           issues.push({ rule: 'fake_heading', wcag: '1.3.1', level: 'A', severity: 'warning',
-            message: `Paragraph looks like a heading (bold, larger text) but uses no Heading style — screen readers won't recognize it as navigation: "${text.slice(0, 50)}"` });
+            message: `This text is bolded and sized to look like a heading, but it isn't actually set as one — screen readers can't recognize it as navigation: "${text.slice(0, 50)}"`,
+            fix: "Select this paragraph and apply a real Heading style (Home tab > Styles > Heading 1/2/3...) instead of manually bolding/resizing the text." });
         }
       }
     }
   });
   if (!sawHeading && paragraphs.length > 5) {
     issues.push({ rule: 'no_headings', wcag: '1.3.1', level: 'A', severity: 'warning',
-      message: 'Document has no real Heading-styled paragraphs at all — consider adding structure for longer documents.' });
+      message: 'This document has no real headings at all, which makes it hard for screen reader users to jump to the section they want in a longer document.',
+      fix: "Apply Heading styles (Home tab > Styles) to section titles so screen reader users can navigate the document by heading." });
   }
 
   // --- images (inline via wp:docPr) ---
@@ -993,15 +1047,19 @@ async function checkDocx(arrayBuffer, JSZipLib, DOMParserImpl) {
     const name = docPr.getAttribute('name') || 'unnamed image';
     if (!descr || !descr.trim()) {
       issues.push({ rule: 'missing_alt', wcag: '1.1.1', level: 'A', severity: 'error',
-        message: `Image "${name}" has no alt text (description).` });
+        message: `The image "${name}" has no description, so people using a screen reader have no idea what it shows.`,
+        fix: "Right-click the image > Edit Alt Text, and describe what it shows or what it's for." });
     } else if (/^(image|img|picture)\d*(\.(jpe?g|png|gif))?$/i.test(descr.trim())) {
       issues.push({ rule: 'placeholder_alt', wcag: '1.1.1', level: 'A', severity: 'warning',
-        message: `Alt text on "${name}" looks like a placeholder/filename: "${descr}"` });
+        message: `The description on "${name}" is just a filename, not an actual description: "${descr}"`,
+        fix: "Right-click the image > Edit Alt Text, and replace it with a real description of what the image shows." });
     } else {
       issues.push({ rule: 'alt_needs_review', wcag: '1.1.1', level: 'A', severity: 'review',
-        message: `Alt text present on "${name}" — verify it's meaningful: "${descr}"` });
+        message: `The image "${name}" has a description — just double-check it explains what's shown: "${descr}"`,
+        fix: "Read the description and confirm it explains what the image shows, not just that something is there." });
       issues.push({ rule: 'image_of_text_check', wcag: '1.4.5', level: 'AA', severity: 'review',
-        message: `If "${name}" contains text rendered as a picture, that's a 1.4.5 issue — confirm it isn't (e.g. a screenshot of text).` });
+        message: `If "${name}" is actually a screenshot of text (rather than a photo, chart, or diagram), that's a separate problem screen readers can't work around.`,
+        fix: "If it is a screenshot of text, retype the content as real text instead, or include the full text in the alt description." });
     }
   });
 
@@ -1009,7 +1067,8 @@ async function checkDocx(arrayBuffer, JSZipLib, DOMParserImpl) {
   const anchorCount = tag(body, 'wp:anchor').length;
   if (anchorCount > 0) {
     issues.push({ rule: 'floating_objects', wcag: '1.3.2', level: 'A', severity: 'review',
-      message: `Found ${anchorCount} floating/anchored image(s) (not inline). These can produce an unpredictable reading order for screen readers — confirm reading order manually or switch to 'In Line with Text' wrapping.` });
+      message: `This document has ${anchorCount} image(s) that float freely on the page instead of sitting inline with the text. Screen readers may read them in a confusing, unpredictable order.`,
+      fix: "Right-click each affected image > Wrap Text > In Line with Text, so it reads in the same order it appears visually." });
   }
 
   // --- tables ---
@@ -1023,7 +1082,8 @@ async function checkDocx(arrayBuffer, JSZipLib, DOMParserImpl) {
     const hasHeaderFlag = trPr ? firstTag(trPr, 'w:tblHeader') !== null : false;
     if (!hasHeaderFlag) {
       issues.push({ rule: 'table_missing_header_row', wcag: '1.3.1', level: 'A', severity: 'error',
-        message: "Table's first row is not marked as a header row (select the row > Table Layout tab > 'Repeat Header Rows', or Table Properties > Row > 'Repeat as header row at the top of each page').",
+        message: "This table's first row isn't marked as a header row, so screen readers can't announce what each column means as someone moves through the table.",
+        fix: "Select the row > Table Layout tab > 'Repeat Header Rows', or Table Properties > Row > 'Repeat as header row at the top of each page'.",
         location: loc });
     }
     const mergedFound = rows.some(row => tag(row, 'w:tc').some(tc => {
@@ -1033,7 +1093,8 @@ async function checkDocx(arrayBuffer, JSZipLib, DOMParserImpl) {
     }));
     if (mergedFound) {
       issues.push({ rule: 'table_merged_cells', wcag: '1.3.1', level: 'A', severity: 'warning',
-        message: 'Table contains merged cells — these often confuse screen reader table navigation. Confirm it still reads logically.',
+        message: 'This table has merged cells, which often confuse screen readers as they try to announce rows and columns. Double-check it still makes sense read aloud.',
+        fix: "Where possible, avoid merged cells in data tables; if merging is unavoidable, verify with a screen reader that navigation still makes sense.",
         location: loc });
     }
   });
@@ -1047,7 +1108,8 @@ async function checkDocx(arrayBuffer, JSZipLib, DOMParserImpl) {
       const hasNumPr = pPr ? firstTag(pPr, 'w:numPr') !== null : false;
       if (!hasNumPr) {
         issues.push({ rule: 'manual_bullet', wcag: '1.3.1', level: 'A', severity: 'warning',
-          message: `Paragraph starts with a typed bullet character but isn't using real list formatting — screen readers won't announce it as a list item: "${text.slice(0, 50)}"` });
+          message: `This looks like a bulleted list, but it's just typed dashes/asterisks rather than real list formatting — screen readers won't announce it as a list: "${text.slice(0, 50)}"`,
+          fix: "Select the paragraphs and apply Word's real Bullets/Numbering (Home tab), then delete the manually typed dash/asterisk character." });
       }
     }
   });
@@ -1057,13 +1119,16 @@ async function checkDocx(arrayBuffer, JSZipLib, DOMParserImpl) {
     const displayText = tag(h, 'w:t').map(t => t.textContent || '').join('').trim();
     if (!displayText) {
       issues.push({ rule: 'empty_link', wcag: '2.4.4', level: 'A', severity: 'error',
-        message: 'Hyperlink has no visible display text.' });
+        message: 'This link has no visible text, so screen reader users have no way to know where it goes.',
+        fix: "Add visible link text describing the destination." });
     } else if (DOCX_URL_RE.test(displayText)) {
       issues.push({ rule: 'raw_url_link_text', wcag: '2.4.4', level: 'A', severity: 'warning',
-        message: `Link text is a raw URL, not descriptive: "${displayText.slice(0, 60)}"` });
+        message: `This link's text is just the raw web address, which is awkward for screen readers to read aloud and doesn't describe where it goes: "${displayText.slice(0, 60)}"`,
+        fix: 'Replace the raw URL with descriptive text, e.g. "JALC Fall 2026 Catalog" instead of the pasted link.' });
     } else if (DOCX_GENERIC_LINK_PHRASES.has(displayText.toLowerCase().replace(/[.\s]+$/, ''))) {
       issues.push({ rule: 'generic_link_text', wcag: '2.4.4', level: 'A', severity: 'warning',
-        message: `Link text is non-descriptive out of context: "${displayText}"` });
+        message: `This link just says "${displayText}", which doesn't describe where it goes if someone is jumping between links (a common way screen reader users navigate).`,
+        fix: 'Rewrite the link text to describe its destination, e.g. "Download the Fall syllabus" instead of "click here".' });
     }
   });
 
@@ -1092,7 +1157,8 @@ async function checkDocx(arrayBuffer, JSZipLib, DOMParserImpl) {
           if (ratio < threshold) {
             const text = paraText(p);
             issues.push({ rule: 'low_contrast', wcag: '1.4.3', level: 'AA', severity: 'error',
-              message: `Text color #${colorVal} on shading #${fill} is ${ratio.toFixed(2)}:1, below the ${threshold}:1 threshold: "${text.slice(0, 50)}"` });
+              message: `This text doesn't stand out enough against its background for people with low vision to read comfortably: "${text.slice(0, 50)}"`,
+              fix: `Choose a darker text color or lighter background (or vice versa) so the ratio reaches at least ${threshold}:1. Check with a contrast tool like WebAIM's Contrast Checker.` });
           }
         }
       }
@@ -1101,7 +1167,8 @@ async function checkDocx(arrayBuffer, JSZipLib, DOMParserImpl) {
     const text = paraText(p);
     if (colorOnlyRe.test(text)) {
       issues.push({ rule: 'possible_color_only', wcag: '1.4.1', level: 'A', severity: 'review',
-        message: `Paragraph may rely on color alone to convey meaning (e.g. "required" shown only in red) — confirm there's also a text/symbol indicator: "${text.slice(0, 60)}"` });
+        message: `This text may be using color as the only way to signal something important (like marking a field "required" only by making it red) — people who can't see color would miss that signal entirely: "${text.slice(0, 60)}"`,
+        fix: 'Add a non-color indicator alongside the color, such as bold text, an asterisk, or the word "Required".' });
     }
   });
 
@@ -1207,6 +1274,14 @@ function renderFileReport(container, filename, issues) {
       snippet.className = 'issue-snippet';
       snippet.textContent = issue.snippet;
       body.appendChild(snippet);
+    }
+
+    if (issue.fix) {
+      const fix = document.createElement('div');
+      fix.className = 'issue-fix';
+      fix.innerHTML = '<strong>Fix:</strong> ';
+      fix.appendChild(document.createTextNode(issue.fix));
+      body.appendChild(fix);
     }
 
     li.appendChild(body);
